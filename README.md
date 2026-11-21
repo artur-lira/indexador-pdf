@@ -17,10 +17,12 @@ Autor: Artur Lira dos Santos · Licença MIT
 - **Cada ocorrência numa linha**: documento, página e trecho com o termo destacado.
 - **Pré-visualização**: renderiza a página, destaca todas as ocorrências (amarelo) e a
   selecionada (laranja), com zoom, navegação de páginas, F3/Shift+F3 entre ocorrências.
-- **Seleção e cópia de texto na prévia**: arraste com o botão esquerdo sobre a página
-  para copiar o texto da área (funciona também em páginas com OCR). O botão direito
-  oferece "copiar com referência" (arquivo, página e SHA-256) e "copiar a página inteira".
-  Para mover a página, arraste com o botão do meio ou com Shift + botão esquerdo.
+- **Seleção de texto na prévia, como num leitor de PDF**: clique numa letra e arraste
+  (seleção em fluxo, linha a linha); duplo clique seleciona a palavra (CPF, placa e nº de
+  processo vêm inteiros); Shift+clique estende; Ctrl+A seleciona a página. **Ctrl+C**
+  copia; **Ctrl+Shift+C** copia com a referência (arquivo, página e SHA-256). Funciona
+  também em páginas com OCR. Para mover a página, arraste com o botão do meio ou com
+  Ctrl + botão esquerdo.
 - **Ctrl+C na lista de resultados** copia o trecho com arquivo, página e SHA-256.
 - **OCR opcional (Tesseract)** para páginas escaneadas sem camada de texto.
 - **SHA-256** de cada arquivo registrado no índice e exibido na prévia.

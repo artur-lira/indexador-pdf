@@ -105,3 +105,23 @@ def test_texto_na_area():
     assert texto_na_area(palavras, (40, 0, 100, 45)) == "pericial\n.38"
     ocr = [w[:5] for w in palavras]
     assert texto_na_area(ocr, (0, 0, 100, 45)) == "Laudo pericial\nProjétil .38"
+
+
+def test_selecao_em_fluxo():
+    from indexador.selecao import CaracteresPagina
+    d = pymupdf.open()
+    pg = d.new_page()
+    pg.insert_text((72, 100), "Primeira linha do laudo", fontsize=12)
+    pg.insert_text((72, 120), "Segunda linha com CPF 123.456.789-00", fontsize=12)
+    cp = CaracteresPagina.de_rawdict(pg.get_text("rawdict"))
+    a = cp.posicao(72 + 9 * 6.5, 96)          # dentro de "linha" na 1ª linha
+    b = cp.posicao(72 + 7 * 6.5, 116)         # dentro de "linha" na 2ª linha
+    t = cp.texto(a, b)
+    assert "\n" in t and t.split("\n")[1].startswith("Segunda")
+    assert len(cp.retangulos(a, b)) == 2
+    w = cp.palavra_em(cp.posicao(80, 96))
+    assert cp.texto(*w) == "Primeira"
+    assert cp.texto(0, len(cp)) == "Primeira linha do laudo\nSegunda linha com CPF 123.456.789-00"
+    ocr = CaracteresPagina.de_palavras([(10, 10, 50, 20, "Laudo"), (55, 10, 90, 20, "pericial"),
+                                        (10, 30, 50, 40, "OCR")])
+    assert ocr.texto(0, len(ocr)) == "Laudo pericial\nOCR"

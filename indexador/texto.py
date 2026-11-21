@@ -255,3 +255,29 @@ def tokens_de_palavras(palavras) -> tuple[list[str], list[tuple[float, float, fl
             toks.append(tok)
             caixas.append((x0 + a * larg, y0, x0 + b * larg, y1))
     return toks, caixas
+
+
+def texto_na_area(palavras, area: tuple[float, float, float, float]) -> str:
+    """Texto das palavras (formato ``page.get_text("words")``) cujo centro está dentro de
+    ``area`` (x0, y0, x1, y1, nas coordenadas da página), na ordem de leitura e com
+    quebras de linha preservadas."""
+    ax0, ay0, ax1, ay1 = area
+    linhas: list[list[str]] = []
+    chave_ant = None
+    y_ant = None
+    for w in palavras:
+        x0, y0, x1, y1, txt = w[0], w[1], w[2], w[3], w[4]
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        if not (ax0 <= cx <= ax1 and ay0 <= cy <= ay1) or not txt:
+            continue
+        if len(w) >= 7:
+            chave = (w[5], w[6])          # bloco, linha (PDF com texto)
+            nova = chave != chave_ant
+        else:                             # palavras de OCR: decide pela altura
+            chave = None
+            nova = y_ant is None or abs(cy - y_ant) > max(2.0, (y1 - y0) * 0.5)
+        if nova or not linhas:
+            linhas.append([])
+        linhas[-1].append(txt)
+        chave_ant, y_ant = chave, cy
+    return "\n".join(" ".join(l) for l in linhas)

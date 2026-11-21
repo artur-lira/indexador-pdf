@@ -94,3 +94,14 @@ def test_indexacao_incremental_e_integridade(tmp_path):
     assert buscar(con, interpretar("balistica"))[1].ocorrencias == 0
     assert buscar(con, interpretar("papiloscopia"))[1].ocorrencias == 1
     con.close()
+
+
+def test_texto_na_area():
+    from indexador.texto import texto_na_area
+    palavras = [(10, 10, 40, 20, "Laudo", 0, 0), (45, 10, 80, 20, "pericial", 0, 0),
+                (10, 30, 40, 40, "Projétil", 0, 1), (45, 30, 70, 40, ".38", 0, 1),
+                (10, 50, 40, 60, "fora", 0, 2)]
+    assert texto_na_area(palavras, (0, 0, 100, 45)) == "Laudo pericial\nProjétil .38"
+    assert texto_na_area(palavras, (40, 0, 100, 45)) == "pericial\n.38"
+    ocr = [w[:5] for w in palavras]
+    assert texto_na_area(ocr, (0, 0, 100, 45)) == "Laudo pericial\nProjétil .38"

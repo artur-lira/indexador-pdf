@@ -23,14 +23,14 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComb
                                QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox,
                                QPlainTextEdit, QProgressBar, QPushButton, QSpinBox, QSplitter,
                                QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTableView,
-                               QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout, QWidget)
+                               QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout, QWidget, QMenu)
 
 from . import NOME_APP, __autor__, __version__, banco
 from .busca import Resultado, ResumoBusca, buscar
 from .extracao import FLAGS_TEXTO, detectar_tesseract
 from .indexacao import ResumoIndexacao, indexar
 from .texto import (MODO_FRASE, MODO_QUALQUER, MODO_TODAS, Consulta, interpretar, localizar,
-                    tokens_de_palavras)
+                    texto_na_area, tokens_de_palavras)
 
 pymupdf.TOOLS.mupdf_display_errors(False)
 
@@ -196,15 +196,79 @@ class DelegadoTrecho(QStyledItemDelegate):
 # ==========================================================================
 
 class Visualizador(QGraphicsView):
+    """Botão esquerdo arrastado: seleciona uma área de texto.
+    Botão do meio (ou Shift + esquerdo) arrastado: move a página."""
     zoomPedido = Signal(float)
+    areaSelecionada = Signal(QRectF)
+    menuPedido = Signal(object)
 
     def __init__(self):
         super().__init__()
         self.setScene(QGraphicsScene(self))
         self.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
-        self.setDragMode(QGraphicsView.ScrollHandDrag)
+        self.setDragMode(QGraphicsView.NoDrag)
         self.setBackgroundBrush(QColor(90, 90, 90))
         self.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
+        self.viewport().setCursor(Qt.IBeamCursor)
+        self._ini_sel = None
+        self._item_sel: QGraphicsRectItem | None = None
+        self._ini_pan = None
+
+    def limpar_selecao(self):
+        if self._item_sel is not None and self._item_sel.scene() is self.scene():
+            self.scene().removeItem(self._item_sel)
+        self._item_sel = None
+
+    def mousePressEvent(self, ev):
+        pan = ev.button() == Qt.MiddleButton or (
+            ev.button() == Qt.LeftButton and ev.modifiers() & Qt.ShiftModifier)
+        if pan:
+            self._ini_pan = ev.position().toPoint()
+            self.viewport().setCursor(Qt.ClosedHandCursor)
+            ev.accept()
+            return
+        if ev.button() == Qt.LeftButton:
+            self.limpar_selecao()
+            self._ini_sel = self.mapToScene(ev.position().toPoint())
+            self._item_sel = QGraphicsRectItem(QRectF(self._ini_sel, self._ini_sel))
+            self._item_sel.setBrush(QBrush(QColor(40, 120, 255, 45)))
+            self._item_sel.setPen(QPen(QColor(40, 120, 255), 1, Qt.DashLine))
+            self._item_sel.setZValue(10)
+            self.scene().addItem(self._item_sel)
+            ev.accept()
+            return
+        super().mousePressEvent(ev)
+
+    def mouseMoveEvent(self, ev):
+        if self._ini_pan is not None:
+            d = ev.position().toPoint() - self._ini_pan
+            self._ini_pan = ev.position().toPoint()
+            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - d.x())
+            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - d.y())
+            return
+        if self._ini_sel is not None and self._item_sel is not None:
+            p = self.mapToScene(ev.position().toPoint())
+            self._item_sel.setRect(QRectF(self._ini_sel, p).normalized())
+            return
+        super().mouseMoveEvent(ev)
+
+    def mouseReleaseEvent(self, ev):
+        if self._ini_pan is not None:
+            self._ini_pan = None
+            self.viewport().setCursor(Qt.IBeamCursor)
+            return
+        if self._ini_sel is not None and self._item_sel is not None:
+            self._ini_sel = None
+            r = self._item_sel.rect()
+            if r.width() < 3 and r.height() < 3:
+                self.limpar_selecao()
+            else:
+                self.areaSelecionada.emit(r)
+            return
+        super().mouseReleaseEvent(ev)
+
+    def contextMenuEvent(self, ev):
+        self.menuPedido.emit(ev.globalPos())
 
     def wheelEvent(self, ev):
         if ev.modifiers() & Qt.ControlModifier:
@@ -263,6 +327,14 @@ class PainelPrevia(QWidget):
 
         self.vis = Visualizador()
         self.vis.zoomPedido.connect(self.mudar_zoom)
+        self.vis.areaSelecionada.connect(self.copiar_area)
+        self.vis.menuPedido.connect(self.menu_previa)
+        self.vis.setToolTip("Arraste com o botão esquerdo para selecionar e copiar texto.\n"
+                            "Arraste com o botão do meio (ou Shift + esquerdo) para mover a página.\n"
+                            "Ctrl + roda do mouse: zoom.")
+        self.texto_selecionado = ""
+        self._mat_inv = None
+        self._palavras_pag = None
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 0, 0, 0)
         lay.addWidget(self.cab)
@@ -361,7 +433,11 @@ class PainelPrevia(QWidget):
     def renderizar(self, atual: int | None = None, manter_rolagem: bool = False):
         cena = self.vis.scene()
         hs, vs = self.vis.horizontalScrollBar().value(), self.vis.verticalScrollBar().value()
+        self.vis.limpar_selecao()
         cena.clear()
+        self.texto_selecionado = ""
+        self._mat_inv = None
+        self._palavras_pag = None
         p = self.caminho_abs()
         try:
             doc = self._abrir(p)
@@ -391,11 +467,13 @@ class PainelPrevia(QWidget):
         alvo_rect = None
         n_hits = 0
         try:
+            mat = page.rotation_matrix * pymupdf.Matrix(z, z)
+            self._mat_inv = ~mat
             palavras = self._caixas_palavras(page)
+            self._palavras_pag = palavras
             toks, caixas = tokens_de_palavras(palavras)
             hits = localizar(toks, self.consulta)
             n_hits = len(hits)
-            mat = page.rotation_matrix * pymupdf.Matrix(z, z)
             for k, (i, j) in enumerate(hits):
                 cur = (k == atual)
                 for linha in _juntar_por_linha(caixas[i:j]):
@@ -459,10 +537,59 @@ class PainelPrevia(QWidget):
                 f"{p} (página {self.pagina})")
             self.janela.statusBar().showMessage("Caminho copiado.", 3000)
 
+    def copiar_area(self, r: QRectF):
+        """Copia para a área de transferência o texto da área selecionada."""
+        if self._mat_inv is None or self._palavras_pag is None:
+            return
+        a = pymupdf.Rect(r.left(), r.top(), r.right(), r.bottom()) * self._mat_inv
+        a.normalize()
+        self.texto_selecionado = texto_na_area(self._palavras_pag, (a.x0, a.y0, a.x1, a.y1))
+        if self.texto_selecionado:
+            QGuiApplication.clipboard().setText(self.texto_selecionado)
+            n = len(self.texto_selecionado.split())
+            self.janela.statusBar().showMessage(
+                f"Texto copiado ({n} palavra(s)). Botão direito: copiar com referência.", 6000)
+        else:
+            self.janela.statusBar().showMessage("Nenhum texto na área selecionada.", 4000)
+
+    def _referencia(self) -> str:
+        p = self.caminho_abs() or ""
+        info = (self.janela.info_documento(self.res.doc_id) if self.res else None) or {}
+        ref = f"(Fonte: {p}, página {self.pagina}"
+        if info.get("sha256"):
+            ref += f", SHA-256 {info['sha256']}"
+        return ref + ")"
+
+    def menu_previa(self, pos):
+        if not self.res:
+            return
+        m = QMenu(self)
+        a1 = m.addAction("Copiar texto selecionado")
+        a2 = m.addAction("Copiar texto selecionado com referência (arquivo, página, hash)")
+        a3 = m.addAction("Copiar texto da página inteira")
+        m.addSeparator()
+        a4 = m.addAction("Copiar imagem da página")
+        a1.setEnabled(bool(self.texto_selecionado))
+        a2.setEnabled(bool(self.texto_selecionado))
+        esc = m.exec(pos)
+        if esc is a1:
+            QGuiApplication.clipboard().setText(self.texto_selecionado)
+        elif esc is a2:
+            QGuiApplication.clipboard().setText(
+                f"\u201c{self.texto_selecionado}\u201d\n{self._referencia()}")
+        elif esc is a3 and self._palavras_pag is not None:
+            QGuiApplication.clipboard().setText(
+                texto_na_area(self._palavras_pag, (-1e9, -1e9, 1e9, 1e9)))
+        elif esc is a4:
+            self.copiar_imagem()
+        if esc in (a1, a2, a3):
+            self.janela.statusBar().showMessage("Texto copiado.", 3000)
+
     def copiar_imagem(self):
         cena = self.vis.scene()
         if not self.res or cena.sceneRect().isEmpty():
             return
+        self.vis.limpar_selecao()
         r = cena.sceneRect()
         dpr = self.devicePixelRatioF()
         img = QImage(int(r.width() * dpr), int(r.height() * dpr), QImage.Format_RGB32)
@@ -703,6 +830,12 @@ class JanelaPrincipal(QMainWindow):
         hh.setStretchLastSection(True)
         self.tabela.setColumnWidth(0, 220)
         self.tabela.selectionModel().currentRowChanged.connect(self.ao_selecionar)
+        a = QAction("Copiar trecho", self.tabela)
+        a.setShortcut(QKeySequence.Copy)
+        a.setShortcutContext(Qt.WidgetShortcut)
+        a.triggered.connect(self.copiar_resultado)
+        self.tabela.addAction(a)
+        self.tabela.setContextMenuPolicy(Qt.ActionsContextMenu)
 
         self.previa = PainelPrevia(self)
         self.split = QSplitter(Qt.Horizontal)
@@ -1032,6 +1165,18 @@ class JanelaPrincipal(QMainWindow):
             self.previa.mostrar(self.raiz, r, self.consulta_atual)
         finally:
             QApplication.restoreOverrideCursor()
+
+    def copiar_resultado(self):
+        idx = self.tabela.currentIndex()
+        if not idx.isValid():
+            return
+        r = self.modelo.itens[idx.row()]
+        info = self.info_documento(r.doc_id) or {}
+        txt = (f"\u201c{r.oc.antes}{r.oc.trecho}{r.oc.depois}\u201d\n"
+               f"(Fonte: {os.path.join(self.raiz, r.caminho)}, página {r.pagina}"
+               + (f", SHA-256 {info['sha256']}" if info.get("sha256") else "") + ")")
+        QGuiApplication.clipboard().setText(txt)
+        self.statusBar().showMessage("Trecho copiado com a referência.", 3000)
 
     def mover_selecao(self, passo: int):
         n = self.modelo.rowCount()
